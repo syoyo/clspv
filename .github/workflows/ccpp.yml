@@ -24,7 +24,7 @@ jobs:
    
    steps:
      - uses: actions/checkout@v1
-       name: checkout
+     - name: checkout
        run: |
          choco install cmake --pre --yes --no-progress
          choco upgrade cmake --pre --yes --no-progress
