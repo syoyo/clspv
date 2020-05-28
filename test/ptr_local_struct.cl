@@ -1,4 +1,4 @@
-// RUN: clspv %s -o %t.spv -descriptormap=%t2.map
+// RUN: clspv %s -o %t.spv -descriptormap=%t2.map -cluster-pod-kernel-args=0
 // RUN: spirv-dis -o %t2.spvasm %t.spv
 // RUN: FileCheck %s < %t2.spvasm
 // RUN: FileCheck %s < %t2.map -check-prefix=MAP
@@ -13,9 +13,9 @@ kernel void foo(local float *L, global float* A, float f, S local* LS, constant 
 }
 
 //      MAP: kernel,foo,arg,A,argOrdinal,1,descriptorSet,0,binding,0,offset,0,argKind,buffer
-// MAP-NEXT: kernel,foo,arg,f,argOrdinal,2,descriptorSet,0,binding,1,offset,0,argKind,pod,argSize,4
+// MAP-NEXT: kernel,foo,arg,f,argOrdinal,2,descriptorSet,0,binding,1,offset,0,argKind,pod_ubo,argSize,4
 // MAP-NEXT: kernel,foo,arg,C,argOrdinal,4,descriptorSet,0,binding,2,offset,0,argKind,buffer
-// MAP-NEXT: kernel,foo,arg,g,argOrdinal,5,descriptorSet,0,binding,3,offset,0,argKind,pod,argSize,4
+// MAP-NEXT: kernel,foo,arg,g,argOrdinal,5,descriptorSet,0,binding,3,offset,0,argKind,pod_ubo,argSize,4
 // MAP-NEXT: kernel,foo,arg,L,argOrdinal,0,argKind,local,arrayElemSize,4,arrayNumElemSpecId,3
 // MAP-NEXT: kernel,foo,arg,LS,argOrdinal,3,argKind,local,arrayElemSize,8,arrayNumElemSpecId,4
 // MAP-NOT: kernel
@@ -27,7 +27,6 @@ kernel void foo(local float *L, global float* A, float f, S local* LS, constant 
 // CHECK-DAG:  [[__ptr_Workgroup_float:%[0-9a-zA-Z_]+]] = OpTypePointer Workgroup [[_float]]
 // CHECK-DAG:  [[__ptr_Workgroup_uint:%[0-9a-zA-Z_]+]] = OpTypePointer Workgroup [[_uint]]
 // CHECK-DAG:  [[__struct_22:%[0-9a-zA-Z_]+]] = OpTypeStruct [[_uint]] [[_uint]]
-// CHECK-DAG:  [[__ptr_Workgroup__struct_22:%[0-9a-zA-Z_]+]] = OpTypePointer Workgroup [[__struct_22]]
 // CHECK-DAG:  [[_2]] = OpSpecConstant [[_uint]] 1
 // CHECK-DAG:  [[__arr_float_2:%[0-9a-zA-Z_]+]] = OpTypeArray [[_float]] [[_2]]
 // CHECK-DAG:  [[__ptr_Workgroup__arr_float_2:%[0-9a-zA-Z_]+]] = OpTypePointer Workgroup [[__arr_float_2]]

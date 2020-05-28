@@ -20,9 +20,6 @@
 namespace clspv {
 namespace Option {
 
-// Returns true if code generation can use SPV_KHR_16bit_storage.
-bool F16BitStorage();
-
 // Returns true if each kernel must use its own descriptor set for all
 // arguments.
 bool DistinctKernelDescriptorSets();
@@ -77,6 +74,14 @@ bool ModuleConstantsInStorageBuffer();
 // Returns true if POD kernel arguments should be passed in via uniform buffers.
 bool PodArgsInUniformBuffer();
 
+// Returns true if POD kernel arguments should be passed in via the push
+// constant interface.
+bool PodArgsInPushConstants();
+
+// Returns true if POD kernel arguments should be clustered into a single
+// interface.
+bool ClusterPodKernelArgs();
+
 // Returns true if SPIR-V IDs for functions should be emitted to stderr during
 // code generation.
 bool ShowIDs();
@@ -94,6 +99,11 @@ bool ConstantArgsInUniformBuffer();
 // calculate the size of UBO arrays for constant arguments if
 // ConstantArgsInUniformBuffer returns true.
 uint64_t MaxUniformBufferSize();
+
+// Returns the maximum push constant interface size. This size is specified in
+// bytes and is used to validate the the size of the POD kernel interface
+// passed as push constants.
+uint32_t MaxPushConstantsSize();
 
 // Returns true if clspv should allow UBOs that do not satisfy the restriction
 // that ArrayStride is a multiple of array alignment.
@@ -136,6 +146,36 @@ static bool LanguageUsesGenericAddressSpace() {
   return (Language() == SourceLanguage::OpenCL_CPP) ||
          ((Language() == SourceLanguage::OpenCL_C_20));
 }
+
+// Returns true when SPV_EXT_scalar_block_layout can be used.
+bool ScalarBlockLayout();
+
+// Returns true when support for get_work_dim() is enabled.
+bool WorkDim();
+
+// Returns true when support for global offset is enabled.
+bool GlobalOffset();
+
+// Returns true when support for global offset is enabled using push constants.
+bool GlobalOffsetPushConstant();
+
+// Returns true when support for non uniform NDRanges is enabled.
+static bool NonUniformNDRangeSupported() {
+  return (Language() == SourceLanguage::OpenCL_CPP) ||
+         ((Language() == SourceLanguage::OpenCL_C_20));
+}
+
+enum class StorageClass : int {
+  kSSBO = 0,
+  kUBO,
+  kPushConstant,
+};
+
+// Returns true if |sc| supports 16-bit storage.
+bool Supports16BitStorageClass(StorageClass sc);
+
+// Returns true if |sc| supports 8-bit storage.
+bool Supports8BitStorageClass(StorageClass sc);
 
 } // namespace Option
 } // namespace clspv

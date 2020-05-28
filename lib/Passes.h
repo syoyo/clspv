@@ -20,9 +20,12 @@ class PassRegistry;
 
 // Individual pass initializers.  See the documentation for
 // initializeClspvPasses() in include/clspv/Passes.h.
+void initializeAddFunctionAttributesPassPass(PassRegistry &);
+void initializeAutoPodArgsPassPass(PassRegistry &);
 void initializeAllocateDescriptorsPassPass(PassRegistry &);
 void initializeClusterModuleScopeConstantVarsPass(PassRegistry &);
 void initializeClusterPodKernelArgumentsPassPass(PassRegistry &);
+void initializeDeclarePushConstantsPassPass(PassRegistry &);
 void initializeDefineOpenCLWorkItemBuiltinsPassPass(PassRegistry &);
 void initializeDirectResourceAccessPassPass(PassRegistry &);
 void initializeFixupStructuredCFGPassPass(PassRegistry &);
@@ -47,13 +50,15 @@ void initializeSimplifyPointerBitcastPassPass(PassRegistry &);
 void initializeSplatArgPassPass(PassRegistry &);
 void initializeSplatSelectConditionPassPass(PassRegistry &);
 void initializeSpecializeImageTypesPassPass(PassRegistry &);
+void initializeStripFreezePassPass(PassRegistry &);
 void initializeUBOTypeTransformPassPass(PassRegistry &);
 void initializeUndoBoolPassPass(PassRegistry &);
 void initializeUndoByvalPassPass(PassRegistry &);
 void initializeUndoGetElementPtrConstantExprPassPass(PassRegistry &);
+void initializeUndoInstCombinePassPass(PassRegistry &);
 void initializeUndoSRetPassPass(PassRegistry &);
 void initializeUndoTranslateSamplerFoldPassPass(PassRegistry &);
-void initializeUndoTruncatedSwitchConditionPassPass(PassRegistry &);
+void initializeUndoTruncateToOddIntegerPassPass(PassRegistry &);
 void initializeZeroInitializeAllocasPassPass(PassRegistry &);
 } // namespace llvm
 

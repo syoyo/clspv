@@ -19,6 +19,8 @@
 #include <string>
 
 #include "clspv/ArgKind.h"
+#include "clspv/PushConstant.h"
+#include "clspv/SpecConstant.h"
 
 namespace clspv {
 namespace version0 {
@@ -49,7 +51,14 @@ const unsigned kSamplerFilterMask = 0x30;
 
 struct DescriptorMapEntry {
   // Type of the entry.
-  enum Kind { Sampler, KernelArg, Constant } kind;
+  enum Kind {
+    Sampler,
+    KernelArg,
+    KernelDecl,
+    Constant,
+    PushConstant,
+    SpecConstant,
+  } kind;
 
   // Common data.
   uint32_t descriptor_set;
@@ -74,10 +83,29 @@ struct DescriptorMapEntry {
     uint32_t pod_arg_size;
   } kernel_arg_data;
 
+  struct KernelDeclData {
+    std::string kernel_name;
+  } kernel_decl_data;
+
   struct ConstantData {
     ArgKind constant_kind;
     std::string hex_bytes;
   } constant_data;
+
+  struct PushConstantData {
+    clspv::PushConstant pc;
+    uint32_t offset;
+    uint32_t size;
+  } push_constant_data;
+
+  struct SpecConstantData {
+    clspv::SpecConstant spec_constant;
+    uint32_t spec_id;
+  } spec_constant_data;
+
+  DescriptorMapEntry(PushConstantData &&data)
+      : kind(PushConstant), descriptor_set(-1), binding(-1),
+        push_constant_data(std::move(data)) {}
 
   DescriptorMapEntry(ConstantData &&data, uint32_t ds, uint32_t b)
       : kind(Constant), descriptor_set(ds), binding(b),
@@ -87,9 +115,17 @@ struct DescriptorMapEntry {
       : kind(KernelArg), descriptor_set(ds), binding(b),
         kernel_arg_data(std::move(data)) {}
 
+  DescriptorMapEntry(KernelDeclData &&data)
+      : kind(KernelDecl), descriptor_set(-1), binding(-1),
+        kernel_decl_data(std::move(data)) {}
+
   DescriptorMapEntry(SamplerData &&data, uint32_t ds, uint32_t b)
       : kind(Sampler), descriptor_set(ds), binding(b),
         sampler_data(std::move(data)) {}
+
+  DescriptorMapEntry(SpecConstantData &&data)
+      : kind(SpecConstant), descriptor_set(-1), binding(-1),
+        spec_constant_data(std::move(data)) {}
 };
 
 std::ostream &operator<<(std::ostream &str,

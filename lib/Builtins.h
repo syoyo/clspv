@@ -15,11 +15,63 @@
 #ifndef CLSPV_LIB_BUILTINS_H_
 #define CLSPV_LIB_BUILTINS_H_
 
+#include <string>
+
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/Function.h"
 
+#include "BuiltinsEnum.h"
+
 namespace clspv {
 
+namespace Builtins {
+
+struct ParamTypeInfo {
+  bool is_signed = false;                            // is element type signed
+  llvm::Type::TypeID type_id = llvm::Type::VoidTyID; // element type
+  uint32_t byte_len = 0;                             // element byte length
+  int vector_size = 0; // number of elements (0 == not a vector)
+  std::string name;    // struct name
+
+  bool isSampler() const;
+};
+
+class FunctionInfo {
+  bool is_valid_ = false;
+  Builtins::BuiltinType type_ = Builtins::kBuiltinNone;
+  std::string name_;
+  ParamTypeInfo return_type_; // only used for convert, where return type is
+                              // embedded in the name
+  std::vector<ParamTypeInfo> params_;
+
+public:
+  FunctionInfo() = default;
+  FunctionInfo(const std::string &_name);
+
+  bool isValid() const { return is_valid_; }
+  Builtins::BuiltinType getType() const { return type_; }
+  operator int() const { return type_; }
+  const std::string &getName() const { return name_; }
+  const ParamTypeInfo &getParameter(size_t arg) const;
+  const ParamTypeInfo &getLastParameter() const { return params_.back(); }
+  size_t getParameterCount() const { return params_.size(); }
+  const ParamTypeInfo &getReturnType() const { return return_type_; }
+
+private:
+  bool GetFromMangledNameCheck(const std::string &mangled_name);
+};
+
+/// Primary Interface
+// returns a FunctionInfo representation of the mangled name
+const FunctionInfo &Lookup(const std::string &mangled_name);
+inline const FunctionInfo &Lookup(llvm::StringRef mangled_name) {
+  return Lookup(mangled_name.str());
+}
+inline const FunctionInfo &Lookup(llvm::Function *func) {
+  return Lookup(func->getName());
+}
+
+/// Legacy
 // Returns true if the function is an OpenCL image builtin.
 bool IsImageBuiltin(llvm::StringRef name);
 inline bool IsImageBuiltin(llvm::Function *f) {
@@ -48,6 +100,30 @@ inline bool IsUintSampledImageRead(llvm::Function *f) {
 bool IsIntSampledImageRead(llvm::StringRef name);
 inline bool IsIntSampledImageRead(llvm::Function *f) {
   return IsIntSampledImageRead(f->getName());
+}
+
+// Returns true if the function is an OpenCL image read.
+bool IsUnsampledImageRead(llvm::StringRef name);
+inline bool IsUnsampledImageRead(llvm::Function *f) {
+  return IsUnsampledImageRead(f->getName());
+}
+
+// Returns true if the function is an OpenCL image read of float type.
+bool IsFloatUnsampledImageRead(llvm::StringRef name);
+inline bool IsFloatUnsampledImageRead(llvm::Function *f) {
+  return IsFloatUnsampledImageRead(f->getName());
+}
+
+// Returns true if the function is an OpenCL image read of uint type.
+bool IsUintUnsampledImageRead(llvm::StringRef name);
+inline bool IsUintUnsampledImageRead(llvm::Function *f) {
+  return IsUintUnsampledImageRead(f->getName());
+}
+
+// Returns true if the function is an OpenCL image read of int type.
+bool IsIntUnsampledImageRead(llvm::StringRef name);
+inline bool IsIntUnsampledImageRead(llvm::Function *f) {
+  return IsIntUnsampledImageRead(f->getName());
 }
 
 // Returns true if the function is an OpenCL image write.
@@ -103,6 +179,8 @@ bool IsImageQuery(llvm::StringRef name);
 inline bool IsImageQuery(llvm::Function *f) {
   return IsImageQuery(f->getName());
 }
+
+} // namespace Builtins
 
 } // namespace clspv
 

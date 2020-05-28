@@ -52,16 +52,6 @@ llvm::cl::opt<bool> distinct_kernel_descriptor_sets(
     llvm::cl::desc("Each kernel uses its own descriptor set for its arguments. "
                    "Turns off direct-resource-access optimizations."));
 
-// TODO(dneto): As per Neil Henning suggestion, might not need this if
-// you can trace the pointer back far enough to see that it's 32-bit
-// aligned.  However, even in the vstore_half case, you'll probably get
-// better performance if you can rely on SPV_KHR_16bit_storage since in
-// the alternate case you're using a (relaxed) atomic, and therefore
-// have to write through to the cache.
-llvm::cl::opt<bool> f16bit_storage(
-    "f16bit_storage", llvm::cl::init(false),
-    llvm::cl::desc("Assume the target supports SPV_KHR_16bit_storage"));
-
 llvm::cl::opt<bool> hack_initializers(
     "hack-initializers", llvm::cl::init(false),
     llvm::cl::desc(
@@ -112,6 +102,11 @@ llvm::cl::opt<bool>
     pod_ubo("pod-ubo", llvm::cl::init(false),
             llvm::cl::desc("POD kernel arguments are in uniform buffers"));
 
+llvm::cl::opt<bool> pod_pushconstant(
+    "pod-pushconstant",
+    llvm::cl::desc("POD kernel arguments are in the push constant interface"),
+    llvm::cl::init(false));
+
 llvm::cl::opt<bool> module_constants_in_storage_buffer(
     "module-constants-in-storage-buffer", llvm::cl::init(false),
     llvm::cl::desc(
@@ -130,6 +125,11 @@ llvm::cl::opt<bool> constant_args_in_uniform_buffer(
 llvm::cl::opt<int> maximum_ubo_size(
     "max-ubo-size", llvm::cl::init(64 << 10),
     llvm::cl::desc("Specify the maximum UBO array size in bytes."));
+
+llvm::cl::opt<int> maximum_pushconstant_size(
+    "max-pushconstant-size", llvm::cl::init(128),
+    llvm::cl::desc(
+        "Specify the maximum push constant interface size in bytes."));
 
 llvm::cl::opt<bool> relaxed_ubo_layout(
     "relaxed-ubo-layout",
@@ -168,7 +168,55 @@ llvm::cl::opt<clspv::Option::SourceLanguage> cl_std(
 static llvm::cl::opt<bool> images("images", llvm::cl::init(true),
                                   llvm::cl::desc("Enable support for images"));
 
+static llvm::cl::opt<bool>
+    scalar_block_layout("scalar-block-layout", llvm::cl::init(false),
+                        llvm::cl::desc("Assume VK_EXT_scalar_block_layout"));
+
+static llvm::cl::opt<bool> work_dim(
+    "work-dim", llvm::cl::init(true),
+    llvm::cl::desc("Enable support for get_work_dim() built-in function"));
+
+static llvm::cl::opt<bool>
+    global_offset("global-offset", llvm::cl::init(false),
+                  llvm::cl::desc("Enable support for global offsets"));
+
+static llvm::cl::opt<bool> global_offset_push_constant(
+    "global-offset-push-constant", llvm::cl::init(false),
+    llvm::cl::desc("Enable support for global offsets in push constants"));
+
 static bool use_sampler_map = false;
+
+static llvm::cl::opt<bool> cluster_non_pointer_kernel_args(
+    "cluster-pod-kernel-args", llvm::cl::init(true),
+    llvm::cl::desc("Collect plain-old-data kernel arguments into a struct in "
+                   "a single storage buffer, using a binding number after "
+                   "other arguments. Use this to reduce storage buffer "
+                   "descriptors."));
+
+static llvm::cl::list<clspv::Option::StorageClass> no_16bit_storage(
+    "no-16bit-storage",
+    llvm::cl::desc("Disable fine-grained 16-bit storage capabilities."),
+    llvm::cl::Prefix, llvm::cl::CommaSeparated, llvm::cl::ZeroOrMore,
+    llvm::cl::values(
+        clEnumValN(clspv::Option::StorageClass::kSSBO, "ssbo",
+                   "Disallow 16-bit types in SSBO interfaces"),
+        clEnumValN(clspv::Option::StorageClass::kUBO, "ubo",
+                   "Disallow 16-bit types in UBO interfaces"),
+        clEnumValN(clspv::Option::StorageClass::kPushConstant, "pushconstant",
+                   "Disallow 16-bit types in push constant interfaces")));
+
+static llvm::cl::list<clspv::Option::StorageClass> no_8bit_storage(
+    "no-8bit-storage",
+    llvm::cl::desc("Disable fine-grained 8-bit storage capabilities."),
+    llvm::cl::Prefix, llvm::cl::CommaSeparated, llvm::cl::ZeroOrMore,
+    llvm::cl::values(
+        clEnumValN(clspv::Option::StorageClass::kSSBO, "ssbo",
+                   "Disallow 8-bit types in SSBO interfaces"),
+        clEnumValN(clspv::Option::StorageClass::kUBO, "ubo",
+                   "Disallow 8-bit types in UBO interfaces"),
+        clEnumValN(clspv::Option::StorageClass::kPushConstant, "pushconstant",
+                   "Disallow 8-bit types in push constant interfaces")));
+
 } // namespace
 
 namespace clspv {
@@ -181,7 +229,6 @@ bool DirectResourceAccess() {
 }
 bool ShareModuleScopeVariables() { return !no_share_module_scope_variables; }
 bool DistinctKernelDescriptorSets() { return distinct_kernel_descriptor_sets; }
-bool F16BitStorage() { return f16bit_storage; }
 bool HackDistinctImageSampler() { return hack_dis; }
 bool HackInitializers() { return hack_initializers; }
 bool HackInserts() { return hack_inserts; }
@@ -193,9 +240,11 @@ bool ModuleConstantsInStorageBuffer() {
   return module_constants_in_storage_buffer;
 }
 bool PodArgsInUniformBuffer() { return pod_ubo; }
+bool PodArgsInPushConstants() { return pod_pushconstant; }
 bool ShowIDs() { return show_ids; }
 bool ConstantArgsInUniformBuffer() { return constant_args_in_uniform_buffer; }
 uint64_t MaxUniformBufferSize() { return maximum_ubo_size; }
+uint32_t MaxPushConstantsSize() { return maximum_pushconstant_size; }
 bool RelaxedUniformBufferLayout() { return relaxed_ubo_layout; }
 bool Std430UniformBufferLayout() { return std430_ubo_layout; }
 bool KeepUnusedArguments() { return keep_unused_arguments; }
@@ -204,6 +253,31 @@ bool ImageSupport() { return images; }
 bool UseSamplerMap() { return use_sampler_map; }
 void SetUseSamplerMap(bool use) { use_sampler_map = use; }
 SourceLanguage Language() { return cl_std; }
+bool ScalarBlockLayout() { return scalar_block_layout; }
+bool WorkDim() { return work_dim; }
+bool GlobalOffset() { return global_offset; }
+bool GlobalOffsetPushConstant() { return global_offset_push_constant; }
+bool ClusterPodKernelArgs() { return cluster_non_pointer_kernel_args; }
+
+bool Supports16BitStorageClass(StorageClass sc) {
+  // -no-16bit-storage removes storage capabilities.
+  for (auto storage_class : no_16bit_storage) {
+    if (storage_class == sc)
+      return false;
+  }
+
+  return true;
+}
+
+bool Supports8BitStorageClass(StorageClass sc) {
+  // -no-8bit-storage removes storage capabilities.
+  for (auto storage_class : no_8bit_storage) {
+    if (storage_class == sc)
+      return false;
+  }
+
+  return true;
+}
 
 } // namespace Option
 } // namespace clspv

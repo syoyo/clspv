@@ -17,6 +17,8 @@
 
 #include "clspv/DescriptorMap.h"
 
+#include "PushConstant.h"
+
 namespace clspv {
 namespace version0 {
 
@@ -29,8 +31,17 @@ std::ostream &operator<<(std::ostream &str,
   case DescriptorMapEntry::Kind::KernelArg:
     str << "kernel";
     break;
+  case DescriptorMapEntry::Kind::KernelDecl:
+    str << "kernel_decl";
+    break;
   case DescriptorMapEntry::Kind::Constant:
     str << "constant";
+    break;
+  case DescriptorMapEntry::Kind::PushConstant:
+    str << "pushconstant";
+    break;
+  case DescriptorMapEntry::Kind::SpecConstant:
+    str << "spec_constant";
     break;
   default:
     assert(0 && "Unhandled descriptor map entry kind.");
@@ -97,6 +108,10 @@ std::ostream &operator<<(std::ostream &str, const DescriptorMapEntry &entry) {
       str << ",argKind," << GetArgKindName(kernel_data.arg_kind)
           << ",arrayElemSize," << kernel_data.local_element_size
           << ",arrayNumElemSpecId," << kernel_data.local_spec_id;
+    } else if (kernel_data.arg_kind == ArgKind::PodPushConstant) {
+      str << ",offset," << kernel_data.pod_offset << ",argKind,"
+          << GetArgKindName(kernel_data.arg_kind) << ",argSize,"
+          << kernel_data.pod_arg_size;
     } else {
       str << ",descriptorSet," << entry.descriptor_set << ",binding,"
           << entry.binding << ",offset,";
@@ -114,12 +129,29 @@ std::ostream &operator<<(std::ostream &str, const DescriptorMapEntry &entry) {
     }
     break;
   }
+  case DescriptorMapEntry::Kind::KernelDecl: {
+    const auto &kernel_data = entry.kernel_decl_data;
+    str << kernel_data.kernel_name;
+    break;
+  }
   case DescriptorMapEntry::Kind::Constant: {
     const auto &constant_data = entry.constant_data;
     str << "descriptorSet," << entry.descriptor_set << ",binding,"
         << entry.binding << ",kind,"
         << GetArgKindName(constant_data.constant_kind) << ",hexbytes,"
         << constant_data.hex_bytes;
+    break;
+  }
+  case DescriptorMapEntry::Kind::PushConstant: {
+    const auto &data = entry.push_constant_data;
+    str << "name," << GetPushConstantName(data.pc) << ",offset," << data.offset
+        << ",size," << data.size;
+    break;
+  }
+  case DescriptorMapEntry::Kind::SpecConstant: {
+    const auto &data = entry.spec_constant_data;
+    str << GetSpecConstantName(data.spec_constant) << ",spec_id,"
+        << data.spec_id;
     break;
   }
   default:

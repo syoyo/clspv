@@ -37,20 +37,31 @@ void initializeClspvPasses(PassRegistry &);
 } // namespace llvm
 
 namespace clspv {
+
+/// Declare a structure with all enabled push constants and attach metadata to
+/// the module for use by the utilities that abstract push constant usage.
+/// @return An LLVM module pass.
+llvm::ModulePass *createDeclarePushConstantsPass();
+
 /// Define the work-item builtins that OpenCL has.
 /// @return An LLVM module pass.
 ///
 /// These OpenCL work-item builtins are in this pass mapped to LLVM module-scope
 /// global variables, such that:
-/// - get_global_id() is mapped to a variable named "__spirv_GlobalInvocationId"
+/// - get_global_id() is mapped to a variable named
+/// "__spirv_GlobalInvocationId".
+///   When support for the global offset is enabled, the global offset is added
+///   to "__spirv_GlobalInvocationId".
 /// - get_local_size() is mapped to a variable named "__spirv_WorkgroupSize"
 /// - get_local_id() is mapped to a variable named "__spirv_LocalInvocationId"
 /// - get_num_groups() is mapped to a variable named "__spirv_NumWorkgroups"
 /// - get_group_id() is mapped to a variable named "__spirv_WorkgroupId"
 ///
 /// These OpenCL work-item builtins are also defined:
-/// - get_work_dim() always returns 3
-/// - get_global_offset() always returns 0
+/// - get_work_dim() returns either always 3 or a value passed as a spec
+///   constant
+/// - get_global_offset() returns either always 0 or a value passed as a push
+///   constant
 /// - get_global_size() is implemented by multiplying the result from
 ///   get_local_size() by the result from get_num_groups()
 ///
@@ -248,17 +259,17 @@ llvm::ModulePass *createUndoSRetPass();
 /// optimizations on a function that would help here.
 llvm::ModulePass *createUndoTranslateSamplerFoldPass();
 
-/// Undo LLVM optimizing switch instruction conditions by truncating them.
+/// Undo LLVM optimizing a mask to a small integer size.
 /// @return An LLVM module pass.
 ///
-/// LLVM will optimize switch instructions conditions such that it will
-/// sometimes produce invalid integer types. LLVM backends can handle this, but
-/// since this backend does not conform to the normal process, we undo this
-/// optimization here instead.
+/// LLVM will optimize masks to smaller integers that get used in switches and
+/// comparisons. These integer sizes may be invalid types. LLVM backends can
+/// handle this, but since this backend does not conform to the normal process,
+/// we undo this optimization here instead.
 ///
 /// If we could add a flag to our LLVM target to indiciate "please do not create
 /// malformed types" that would make this pass redundant.
-llvm::ModulePass *createUndoTruncatedSwitchConditionPass();
+llvm::ModulePass *createUndoTruncateToOddIntegerPass();
 
 /// Cluster module-scope __constant variables.
 /// @return An LLVM module pass.
@@ -385,5 +396,20 @@ llvm::ModulePass *createSpecializeImageTypesPass();
 /// Currently performs the following changes:
 /// * Add a block to split a continue block used a merge block.
 llvm::FunctionPass *createFixupStructuredCFGPass();
+
+/// Adds attributes to intrinsic and builtin functions to produce a better
+/// optimization outcome.
+llvm::ModulePass *createAddFunctionAttributesPass();
+
+/// Undo specific instcombine transformations that are harmful to generating
+/// SPIR-V.
+llvm::ModulePass *createUndoInstCombinePass();
+
+/// Removes FreezeInsts from the IR.
+llvm::ModulePass *createStripFreezePass();
+
+/// Annotates kernels with the metadata indicating how the POD args should be
+/// handled.
+llvm::ModulePass *createAutoPodArgsPass();
 
 } // namespace clspv

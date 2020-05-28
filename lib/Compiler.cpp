@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "clang/Basic/FileManager.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/CodeGen/CodeGenAction.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -150,13 +151,6 @@ static llvm::cl::opt<std::string> OutputFormat(
 static llvm::cl::opt<std::string>
     SamplerMap("samplermap", llvm::cl::desc("DEPRECATED - Literal sampler map"),
                llvm::cl::value_desc("filename"));
-
-static llvm::cl::opt<bool> cluster_non_pointer_kernel_args(
-    "cluster-pod-kernel-args", llvm::cl::init(false),
-    llvm::cl::desc("Collect plain-old-data kernel arguments into a struct in "
-                   "a single storage buffer, using a binding number after "
-                   "other arguments. Use this to reduce storage buffer "
-                   "descriptors."));
 
 static llvm::cl::opt<bool> verify("verify", llvm::cl::init(false),
                                   llvm::cl::desc("Verify diagnostic outputs"));
@@ -344,8 +338,9 @@ int ParseSamplerMap(const std::string &sampler_map,
                 std::less<StringRef>());
       const auto samplerExpr = std::accumulate(
           samplerStrings.begin(), samplerStrings.end(), std::string(),
-          [](std::string left, std::string right) {
-            return left + std::string(left.empty() ? "" : "|") + right;
+          [](llvm::StringRef left, llvm::StringRef right) {
+            return left.str() + std::string(left.empty() ? "" : "|") +
+                   right.str();
           });
 
       // SamplerMapEntries->push_back(std::make_pair(
@@ -492,7 +487,7 @@ int SetCompilerInstanceOptions(CompilerInstance &instance,
 
   instance.getTargetOpts().Triple = triple.str();
 
-  instance.getCodeGenOpts().MainFileName = overiddenInputFilename;
+  instance.getCodeGenOpts().MainFileName = overiddenInputFilename.str();
   instance.getCodeGenOpts().PreserveVec3Type = true;
   // Disable generation of lifetime intrinsic.
   instance.getCodeGenOpts().DisableLifetimeMarkers = true;
@@ -607,6 +602,9 @@ int PopulatePassManager(
   }
 
   pm->add(clspv::createZeroInitializeAllocasPass());
+  pm->add(clspv::createAddFunctionAttributesPass());
+  pm->add(clspv::createAutoPodArgsPass());
+  pm->add(clspv::createDeclarePushConstantsPass());
   pm->add(clspv::createDefineOpenCLWorkItemBuiltinsPass());
 
   if (0 < pmBuilder.OptLevel) {
@@ -615,7 +613,7 @@ int PopulatePassManager(
 
   pm->add(clspv::createUndoByvalPass());
   pm->add(clspv::createUndoSRetPass());
-  if (cluster_non_pointer_kernel_args) {
+  if (clspv::Option::ClusterPodKernelArgs()) {
     pm->add(clspv::createClusterPodKernelArgumentsPass());
   }
   pm->add(clspv::createReplaceOpenCLBuiltinPass());
@@ -675,14 +673,18 @@ int PopulatePassManager(
   // Now we add any of the LLVM optimizations we wanted
   pmBuilder.populateModulePassManager(*pm);
 
+  // No point attempting to handle freeze currently so strip them from the IR.
+  pm->add(clspv::createStripFreezePass());
+
   // Unhide loads from __constant address space.  Undoes the action of
   // HideConstantLoadsPass.
   pm->add(clspv::createUnhideConstantLoadsPass());
 
+  pm->add(clspv::createUndoInstCombinePass());
   pm->add(clspv::createFunctionInternalizerPass());
   pm->add(clspv::createReplaceLLVMIntrinsicsPass());
   pm->add(clspv::createUndoBoolPass());
-  pm->add(clspv::createUndoTruncatedSwitchConditionPass());
+  pm->add(clspv::createUndoTruncateToOddIntegerPass());
   pm->add(llvm::createStructurizeCFGPass(false));
   // Must be run after structurize cfg.
   pm->add(clspv::createFixupStructuredCFGPass());
@@ -765,6 +767,37 @@ int ParseOptions(const int argc, const char *const argv[]) {
     llvm::errs() << "cannot compile languages that use the generic address "
                     "space (e.g. CLC++, CL2.0) without -inline-entry-points\n";
     return -1;
+  }
+
+  if (clspv::Option::ScalarBlockLayout()) {
+    llvm::errs() << "scalar block layout support unimplemented\n";
+    return -1;
+  }
+
+  // Push constant option validation.
+  if (clspv::Option::PodArgsInPushConstants()) {
+    if (clspv::Option::PodArgsInUniformBuffer()) {
+      llvm::errs() << "POD arguments can only be in either uniform buffers or "
+                      "push constants\n";
+      return -1;
+    }
+
+    if (!clspv::Option::ClusterPodKernelArgs()) {
+      llvm::errs()
+          << "POD arguments must be clustered to be passed as push constants\n";
+      return -1;
+    }
+
+    // Conservatively error if a module scope push constant could be used.
+    if (clspv::Option::GlobalOffsetPushConstant() ||
+        clspv::Option::Language() ==
+            clspv::Option::SourceLanguage::OpenCL_C_20 ||
+        clspv::Option::Language() ==
+            clspv::Option::SourceLanguage::OpenCL_CPP) {
+      llvm::errs() << "POD arguments as push constants are not compatible with "
+                      "module scope push constants\n";
+      return -1;
+    }
   }
 
   return 0;

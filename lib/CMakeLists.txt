@@ -24,14 +24,17 @@ add_library(clspv_core
 # defined here.  This must be loadable by LLVM opt for testing individual
 # passes.
 add_library(clspv_passes
+  ${CMAKE_CURRENT_SOURCE_DIR}/AddFunctionAttributesPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/AllocateDescriptorsPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ArgKind.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/AutoPodArgsPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/Builtins.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/CallGraphOrderedFunctions.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ClusterPodKernelArgumentsPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ClusterConstants.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ComputeStructuredOrder.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ConstantEmitter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/DeclarePushConstantsPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/DefineOpenCLWorkItemBuiltinsPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/DescriptorCounter.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/DirectResourceAccessPass.cpp
@@ -42,11 +45,13 @@ add_library(clspv_passes
   ${CMAKE_CURRENT_SOURCE_DIR}/InlineFuncWithPointerBitCastArgPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/InlineFuncWithPointerToFunctionArgPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/InlineFuncWithSingleCallSitePass.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/Layout.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/MultiVersionUBOFunctionsPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/NormalizeGlobalVariable.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/OpenCLInlinerPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/Option.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/Passes.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/PushConstant.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/SPIRVOp.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/SPIRVProducerPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/RemoveUnusedArguments.cpp
@@ -59,17 +64,20 @@ add_library(clspv_passes
   ${CMAKE_CURRENT_SOURCE_DIR}/ShareModuleScopeVariables.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/SignedCompareFixupPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/SimplifyPointerBitcastPass.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/SpecConstant.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/SpecializeImageTypes.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/SplatArgPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/SplatSelectCondition.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/StripFreezePass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/Types.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/UBOTypeTransformPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/UndoBoolPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/UndoByvalPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/UndoGetElementPtrConstantExprPass.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/UndoInstCombinePass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/UndoSRetPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/UndoTranslateSamplerFoldPass.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/UndoTruncatedSwitchConditionPass.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/UndoTruncateToOddIntegerPass.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ZeroInitializeAllocasPass.cpp
 )
 

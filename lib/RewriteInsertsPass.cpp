@@ -73,7 +73,8 @@ private:
                                        InsertionVector *chain) {
     auto *structTy = dyn_cast<StructType>(iv->getType());
     assert(structTy);
-    const auto numElems = structTy->getNumElements();
+    if (!structTy)
+      return nullptr;
 
     // Walk backward from the tail to an instruction we don't want to
     // replace.
@@ -85,7 +86,7 @@ private:
         // Try to replace this one.
 
         unsigned index = insertion->getIndices()[0];
-        assert(index < numElems);
+        assert(index < structTy->getNumElements());
         if ((*values)[index] != nullptr) {
           // We already have a value for this slot.  Stop now.
           break;
@@ -105,8 +106,10 @@ private:
     // do.
     if (auto *struct_ty = dyn_cast<StructType>(type)) {
       return struct_ty->getNumElements();
-    } else if (auto *seq_ty = dyn_cast<SequentialType>(type)) {
-      return seq_ty->getNumElements();
+    } else if (auto *array_ty = dyn_cast<ArrayType>(type)) {
+      return array_ty->getNumElements();
+    } else if (auto *vec_ty = dyn_cast<VectorType>(type)) {
+      return vec_ty->getNumElements();
     }
     return 0;
   }
@@ -157,7 +160,7 @@ private:
     // Don't handle i8 vectors. Only <4 x i8> is supported and it is
     // translated as i32.  Only handle single-index insertions.
     if (auto vec_ty = dyn_cast<VectorType>(ie->getType())) {
-      if (vec_ty->getVectorElementType() == Type::getInt8Ty(ie->getContext())) {
+      if (vec_ty->getElementType() == Type::getInt8Ty(ie->getContext())) {
         return nullptr;
       }
     }
@@ -218,7 +221,7 @@ private:
   }
 
   // Get or create the composite construct function definition.
-  Function *GetConstructFunction(Module &M, CompositeType *constructed_type) {
+  Function *GetConstructFunction(Module &M, Type *constructed_type) {
     // Get or create the composite construct function definition.
     const string &fn_name = WrapFunctionNameForType(constructed_type);
     Function *fn = M.getFunction(fn_name);
@@ -226,8 +229,15 @@ private:
       // Make the function.
       SmallVector<Type *, 16> elements;
       unsigned num_elements = GetNumElements(constructed_type);
-      for (unsigned i = 0; i != num_elements; ++i)
-        elements.push_back(constructed_type->getTypeAtIndex(i));
+      if (auto struct_ty = dyn_cast<StructType>(constructed_type)) {
+        for (unsigned i = 0; i != num_elements; ++i)
+          elements.push_back(struct_ty->getTypeAtIndex(i));
+      } else if (isa<ArrayType>(constructed_type)) {
+        elements.resize(num_elements, constructed_type->getArrayElementType());
+      } else if (isa<VectorType>(constructed_type)) {
+        elements.resize(num_elements,
+                        cast<VectorType>(constructed_type)->getElementType());
+      }
       FunctionType *fnTy = FunctionType::get(constructed_type, elements, false);
       auto fn_constant = M.getOrInsertFunction(fn_name, fnTy);
       fn = cast<Function>(fn_constant.getCallee());
@@ -301,8 +311,7 @@ bool RewriteInsertsPass::ReplaceCompleteInsertionChains(Module &M) {
       }
     }
 
-    CompositeType *resultTy =
-        cast<CompositeType>(insertions->back()->getType());
+    auto *resultTy = insertions->back()->getType();
     Function *fn = GetConstructFunction(M, resultTy);
 
     // Replace the chain.

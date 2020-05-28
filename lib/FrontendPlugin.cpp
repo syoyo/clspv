@@ -29,6 +29,9 @@
 using namespace clang;
 
 namespace {
+
+static uint32_t kClusteredCount = 0;
+
 struct ExtraValidationConsumer final : public ASTConsumer {
 private:
   CompilerInstance &Instance;
@@ -56,9 +59,60 @@ private:
     CustomDiagnosticOverloadedKernel = 16,
     CustomDiagnosticStructContainsPointer = 17,
     CustomDiagnosticRecursiveStruct = 18,
+    CustomDiagnosticPushConstantSizeExceeded = 19,
+    CustomDiagnosticPushConstantContainsArray = 20,
+    CustomDiagnosticUnsupported16BitStorage = 21,
+    CustomDiagnosticUnsupported8BitStorage = 22,
     CustomDiagnosticTotal
   };
   std::vector<unsigned> CustomDiagnosticsIDMap;
+
+  clspv::Option::StorageClass ConvertToStorageClass(clang::LangAS aspace) {
+    switch (aspace) {
+    case LangAS::opencl_constant:
+      if (clspv::Option::ConstantArgsInUniformBuffer()) {
+        return clspv::Option::StorageClass::kUBO;
+      } else {
+        return clspv::Option::StorageClass::kSSBO;
+      }
+    case LangAS::opencl_global:
+    default:
+      return clspv::Option::StorageClass::kSSBO;
+    }
+  }
+
+  bool ContainsSizedType(QualType QT, uint32_t width) {
+    auto canonical = QT.getCanonicalType();
+    if (auto *BT = dyn_cast<BuiltinType>(canonical)) {
+      switch (BT->getKind()) {
+      case BuiltinType::UShort:
+      case BuiltinType::Short:
+      case BuiltinType::Half:
+      case BuiltinType::Float16:
+        return width == 16;
+      case BuiltinType::UChar:
+      case BuiltinType::Char_U:
+      case BuiltinType::SChar:
+      case BuiltinType::Char_S:
+        return width == 8;
+      default:
+        return false;
+      }
+    } else if (auto *PT = dyn_cast<PointerType>(canonical)) {
+      return ContainsSizedType(PT->getPointeeType(), width);
+    } else if (auto *AT = dyn_cast<ArrayType>(canonical)) {
+      return ContainsSizedType(AT->getElementType(), width);
+    } else if (auto *VT = dyn_cast<VectorType>(canonical)) {
+      return ContainsSizedType(VT->getElementType(), width);
+    } else if (auto *RT = dyn_cast<RecordType>(canonical)) {
+      for (auto field_decl : RT->getDecl()->fields()) {
+        if (ContainsSizedType(field_decl->getType(), width))
+          return true;
+      }
+    }
+
+    return false;
+  }
 
   bool ContainsPointerType(QualType QT) {
     auto canonical = QT.getCanonicalType();
@@ -76,6 +130,22 @@ private:
     return false;
   }
 
+  bool ContainsArrayType(QualType QT) {
+    auto canonical = QT.getCanonicalType();
+    if (auto *PT = dyn_cast<PointerType>(canonical)) {
+      return ContainsArrayType(PT->getPointeeType());
+    } else if (isa<ArrayType>(canonical)) {
+      return true;
+    } else if (auto *RT = dyn_cast<RecordType>(canonical)) {
+      for (auto field_decl : RT->getDecl()->fields()) {
+        if (ContainsArrayType(field_decl->getType()))
+          return true;
+      }
+    }
+
+    return false;
+  }
+
   bool IsRecursiveType(QualType QT, llvm::DenseSet<const Type *> *seen) {
     auto canonical = QT.getCanonicalType();
     if (canonical->isRecordType() &&
@@ -84,7 +154,7 @@ private:
     }
 
     if (auto *PT = dyn_cast<PointerType>(canonical)) {
-      return IsRecursiveType(canonical->getPointeeType(), seen);
+      return IsRecursiveType(PT->getPointeeType(), seen);
     } else if (auto *AT = dyn_cast<ArrayType>(canonical)) {
       return IsRecursiveType(AT->getElementType(), seen);
     } else if (auto *RT = dyn_cast<RecordType>(canonical)) {
@@ -315,7 +385,6 @@ private:
     const FieldDecl *prev = nullptr;
     for (auto field_decl : RT->getDecl()->fields()) {
       const auto field_type = field_decl->getType();
-      const auto field_alignment = GetAlignment(field_type, layout, context);
       const unsigned field_no = field_decl->getFieldIndex();
       const uint64_t field_offset =
           record_layout.getFieldOffset(field_no) / context.getCharWidth();
@@ -464,6 +533,21 @@ public:
     CustomDiagnosticsIDMap[CustomDiagnosticRecursiveStruct] =
         DE.getCustomDiagID(DiagnosticsEngine::Error,
                            "recursive structures are not supported");
+    CustomDiagnosticsIDMap[CustomDiagnosticPushConstantSizeExceeded] =
+        DE.getCustomDiagID(DiagnosticsEngine::Error,
+                           "max push constant size exceeded");
+    CustomDiagnosticsIDMap[CustomDiagnosticPushConstantContainsArray] =
+        DE.getCustomDiagID(
+            DiagnosticsEngine::Error,
+            "arrays are not supported in push constants currently");
+    CustomDiagnosticsIDMap[CustomDiagnosticUnsupported16BitStorage] =
+        DE.getCustomDiagID(DiagnosticsEngine::Error,
+                           "16-bit storage is not supported for "
+                           "%select{SSBOs|UBOs|push constants}0");
+    CustomDiagnosticsIDMap[CustomDiagnosticUnsupported8BitStorage] =
+        DE.getCustomDiagID(DiagnosticsEngine::Error,
+                           "8-bit storage is not supported for "
+                           "%select{SSBOs|UBOs|push constants}0");
   }
 
   virtual bool HandleTopLevelDecl(DeclGroupRef DG) override {
@@ -487,14 +571,20 @@ public:
           }
 
           if (is_opencl_kernel) {
-            if (Kernels.count(FD->getName()) != 0) {
+            if (Kernels.count(FD->getName().str()) != 0) {
               auto srcRange = FD->getSourceRange();
               Report(CustomDiagnosticOverloadedKernel, srcRange, srcRange);
             } else {
-              Kernels.insert(FD->getName());
+              Kernels.insert(FD->getName().str());
             }
           }
 
+          RecordDecl *clustered_args = nullptr;
+          if (is_opencl_kernel && clspv::Option::PodArgsInPushConstants()) {
+            clustered_args = FD->getASTContext().buildImplicitRecord(
+                "__clspv.clustered_args." + std::to_string(kClusteredCount++));
+            clustered_args->startDefinition();
+          }
           for (auto *P : FD->parameters()) {
             auto type = P->getType();
             if (!IsSupportedType(P->getOriginalType(), P->getSourceRange())) {
@@ -525,6 +615,46 @@ public:
               }
             }
 
+            // Check if storage capabilities are supported.
+            if (is_opencl_kernel) {
+              bool contains_16bit =
+                  ContainsSizedType(type.getCanonicalType(), 16);
+              bool contains_8bit =
+                  ContainsSizedType(type.getCanonicalType(), 8);
+              auto sc = clspv::Option::StorageClass::kSSBO;
+              if (type->isPointerType()) {
+                sc = ConvertToStorageClass(
+                    type->getPointeeType().getAddressSpace());
+              } else if (clspv::Option::PodArgsInUniformBuffer()) {
+                sc = clspv::Option::StorageClass::kUBO;
+              } else if (clspv::Option::PodArgsInPushConstants()) {
+                sc = clspv::Option::StorageClass::kPushConstant;
+              }
+
+              if (type->isPointerType() ||
+                  sc != clspv::Option::StorageClass::kSSBO ||
+                  !clspv::Option::ClusterPodKernelArgs()) {
+                // For clustered pod args, assume we can fall back on
+                // type-mangling.
+                if (contains_16bit &&
+                    !clspv::Option::Supports16BitStorageClass(sc)) {
+                  Instance.getDiagnostics().Report(
+                      P->getSourceRange().getBegin(),
+                      CustomDiagnosticsIDMap
+                          [CustomDiagnosticUnsupported16BitStorage])
+                      << static_cast<int>(sc);
+                }
+                if (contains_8bit &&
+                    !clspv::Option::Supports8BitStorageClass(sc)) {
+                  Instance.getDiagnostics().Report(
+                      P->getSourceRange().getBegin(),
+                      CustomDiagnosticsIDMap
+                          [CustomDiagnosticUnsupported8BitStorage])
+                      << static_cast<int>(sc);
+                }
+              }
+            }
+
             if (is_opencl_kernel && type->isPointerType()) {
               auto pointee_type = type->getPointeeType().getCanonicalType();
               if (ContainsPointerType(pointee_type)) {
@@ -537,14 +667,52 @@ public:
             }
 
             if (is_opencl_kernel && !type->isPointerType()) {
-              Layout layout = SSBO;
-              if (clspv::Option::PodArgsInUniformBuffer() &&
-                  !clspv::Option::Std430UniformBufferLayout())
-                layout = UBO;
+              if (clspv::Option::PodArgsInPushConstants()) {
+                // Don't allow arrays in push constants currently.
+                if (ContainsArrayType(type)) {
+                  Report(CustomDiagnosticPushConstantContainsArray,
+                         P->getSourceRange(), P->getSourceRange());
+                  return false;
+                }
+                FieldDecl *field_decl = FieldDecl::Create(
+                    FD->getASTContext(),
+                    Decl::castToDeclContext(clustered_args),
+                    P->getSourceRange().getBegin(),
+                    P->getSourceRange().getEnd(), P->getIdentifier(),
+                    P->getType(), nullptr, nullptr, false, ICIS_NoInit);
+                field_decl->setAccess(AS_public);
+                clustered_args->addDecl(field_decl);
+              } else {
+                Layout layout = SSBO;
+                if (clspv::Option::PodArgsInUniformBuffer() &&
+                    !clspv::Option::Std430UniformBufferLayout())
+                  layout = UBO;
 
-              if (!IsSupportedLayout(type, 0, layout, FD->getASTContext(),
-                                     P->getSourceRange(),
-                                     P->getSourceRange())) {
+                if (!IsSupportedLayout(type, 0, layout, FD->getASTContext(),
+                                       P->getSourceRange(),
+                                       P->getSourceRange())) {
+                  return false;
+                }
+              }
+            }
+          }
+
+          if (clustered_args) {
+            clustered_args->completeDefinition();
+            if (!clustered_args->field_empty()) {
+              auto record_type =
+                  FD->getASTContext().getRecordType(clustered_args);
+              if (!IsSupportedLayout(record_type, 0, SSBO, FD->getASTContext(),
+                                     FD->getSourceRange(),
+                                     FD->getSourceRange())) {
+                return false;
+              }
+
+              if (FD->getASTContext()
+                      .getTypeSizeInChars(record_type)
+                      .getQuantity() > clspv::Option::MaxPushConstantsSize()) {
+                Report(CustomDiagnosticPushConstantSizeExceeded,
+                       FD->getSourceRange(), FD->getSourceRange());
                 return false;
               }
             }

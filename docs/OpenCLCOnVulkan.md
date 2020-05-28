@@ -51,8 +51,9 @@ capabilities:
   - *Note*: this requires enabling the _cl\_khr\_fp16_ extension in the source.
 - `Float64` if the double type (or composites of it) is used.
 - `ImageStorageWriteWithoutFormat` if _write\_only_ images are used.
-- `ImageQuery` if _get\_image\_width()_ or _get\_image\_height()_ builtins are used.
-  - *Note*: these queries are only supported for 2D images currently.
+- `ImageQuery` if any image query is used.
+- `Image1D` if a _write\_only_ image is used.
+- `Sampled1D` if a _read\_only_ image is used.
 
 ## Vulkan Interaction
 
@@ -74,6 +75,27 @@ language must conform to the following the rules:
     _"VK\_KHR\_storage\_buffer\_storage\_class"_ and
     _"VK\_KHR\_variable\_pointers"_ **must** succeed.
 
+### Storage Capabilities
+
+In order to pass 8- or 16-bit types in the shader interface, Vulkan requires
+the appropriate bits are set in VkPhysicalDevice8BitStorageFeaturesKHR for
+8-bit types or VkPhysicalDevice16BitStorageFeaturesKHR (or the appropriate
+Vulkan 1.1 or 1.2 feature structs). By default clspv assumes all feature bits
+are enabled, but provides options to disallow 8- or 16-bit interfaces.
+-no-8bit-storage reflects 8-bit storage features and -no-16bit-storage reflects
+16-bit storage features. Each option can take the following values (can be
+specified in a comma-separated list or multiple times):
+
+- `ssbo`: Represents the storage buffer feature bit.
+- `ubo`: Represents the uniform and storage buffer feature bit.
+- `pushconstant`: Represents the push constant feature bit.
+
+For example, if your device only supports storageBuffer16BitAccess (and no
+8-bit interfaces), pass the following on the command line:
+```
+-no-16bit-storage=ubo,pushconstant -no-8bit-storage=ssbo,ubo,pushconstant
+```
+
 ### Descriptor Type Mappings
 
 OpenCL C kernel argument types are mapped to Vulkan descriptor types in the
@@ -91,11 +113,18 @@ following way:
   types, set `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER`.
 - If the argument to the kernel is a plain-old-data type, the matching Vulkan
   descriptor set type is `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` by default.
-  If option `-pod-ubo` is used the `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER`.
+  If the option `-pod-ubo` is used the descriptor set type is`VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER`.
+  If the option `-pod-pushconstant` is used the arg is instead passed via push
+  constants.
 
-Note: If `-cluster-pod-kernel-args` is used, then all plain-old-data kernel
-arguments are collected into a single structure to be passed in to the compute
-shader as a single storage buffer resource.
+Note: `-pod-ubo` and `-pod-pushconstant` are exclusive options.
+
+Note: By default, all plain-old-data kernel arguments are collected into a
+single structure to be passed in to the compute shader as a single resource. If
+`-cluster-pod-kernel-args=0` is specified, each plain-old-data argument will be
+passed in a via a unique resource.
+
+Note: `-pod-pushconstant` cannot be specified with `-cluster-pod-kernel-args=0`.
 
 ## OpenCL C Modifications
 
@@ -184,10 +213,18 @@ Consider this example:
 
 It generates the following descriptor map:
 
+    kernel_decl,foo
     kernel,foo,arg,a,argOrdinal,0,descriptorSet,0,binding,0,offset,0,argKind,buffer
     kernel,foo,arg,f,argOrdinal,1,descriptorSet,0,binding,1,offset,0,argKind,pod,argSize,4
     kernel,foo,arg,b,argOrdinal,2,descriptorSet,0,binding,2,offset,0,argKind,buffer
     kernel,foo,arg,c,argOrdinal,3,descriptorSet,0,binding,3,offset,0,argKind,pod,argSize,4
+    spec_constant,workgroup_size_x,spec_id,0
+    spec_constant,workgroup_size_y,spec_id,1
+    spec_constant,workgroup_size_z,spec_id,2
+
+The kernels in the module module are declared as follows:
+- `kernel_decl`
+- kernel name
 
 For kernel arguments of types pointer-to-global, pointer-to-constant, and
 plain-old-data types, the fields are:
@@ -210,11 +247,18 @@ plain-old-data types, the fields are:
   - `buffer_ubo` - OpenCL constant buffer. Sent in a uniform buffer.
   - `pod` - Plain Old Data, e.g. a scalar, vector, or structure. Sent in a storage buffer.
   - `pod_ubo` - Plain Old Data, e.g. a scalar, vector, or structure. Sent in a uniform buffer.
+  - `pod_pushconstant` - Plain Old Data, e.g. a scalar, vector or structure. Sent in push constants.
   - `ro_image` - Read-only image
   - `wo_image` - Write-only image
   - `sampler` - Sampler
 - `argSize`
 - only present for plain-old-data kernel arguments.
+
+Module-wide specialization constants are specified as follows:
+- `spec_constant` to describe the use of a module-wide specialization constant
+- specialization constant type (e.g x dimension of WorkgroupSize)
+- `spec_id`
+- the SpecId value
 
 Consider this example, which uses pointer-to-local arguments:
 
@@ -222,9 +266,17 @@ Consider this example, which uses pointer-to-local arguments:
 
 It generates the following descriptor map:
 
+    kernel_decl,foo
     kernel,foo,arg,L,argOrdinal,0,argKind,local,arrayElemSize,4,arrayNumElemSpecId,3
     kernel,foo,arg,A,argOrdinal,1,descriptorSet,0,binding,0,offset,0,argKind,buffer
     kernel,foo,arg,L2,argOrdinal,2,argKind,local,arrayElemSize,16,arrayNumElemSpecId,4
+    spec_constant,workgroup_size_x,spec_id,0
+    spec_constant,workgroup_size_y,spec_id,1
+    spec_constant,workgroup_size_z,spec_id,2
+
+The kernels in the module module are declared as follows:
+- `kernel_decl`
+- kernel name
 
 For kernel arguments of type pointer-to-local, the fields are:
 - `kernel` to indicate a kernel argument
@@ -243,6 +295,12 @@ For kernel arguments of type pointer-to-local, the fields are:
   `SpecId` decoration on the integer constant that specficies the array size.
   (This number is always at least 3 so that specialization IDs 0, 1, and 2 can
   be use for the workgroup size dimensions along `x`, `y`, and `z`.)
+
+Module-wide specialization constants are specified as follows:
+- `spec_constant` to describe the use of a module-wide specialization constant
+- specialization constant type (e.g x dimension of WorkgroupSize)
+- `spec_id`
+- the SpecId value
 
 Notes: Each pointer-to-local argument is assigned its own array type and
 specialization constant to size the array.  Unless you override the
@@ -278,7 +336,30 @@ be faster to read in the shader.
 When option `-pod-ubo` is used, the descriptor map list the `argKind` of a plain-old-data
 argument as `pod_ubo` rather than the default of `pod`.
 
-TODO(dneto):  A push-constant might even be faster, but space is very limited.
+#### Sending in plain-old-data kernel arguments in push constants
+
+Normally plain-old-data arguments are passed into the kernel via a storage buffer.
+Use the option `-pod-pushconstant` to pass these parameters in via push constants. The
+option `-cluster-pod-kernel-args=0` cannot be specified. Push constants are intended
+to provide a fast read path and should be faster to access than a buffer.
+
+When the option `-pod-pushconstant` is used, the descriptor map lists the `argKind` of
+plain-old-data arguments as `pod_pushconstant` rather than the default of `pod`. There
+is no `descriptorset` or `binding` information for push constants.
+
+Note: Vulkan implementations have limited push constant storage (default is 128B).
+clspv provides the option `-max-pushconstant-size` to specify (in bytes) the
+implementation limit for push constants. This is validated at the start of the compile.
+
+Note: Module scope push constanst are currently incompatible with plain-old-data
+arguments sent as push constants.
+
+TODO(alan-baker): See #529 for the overall plan to address this.
+
+The descriptor map entry for kernel arguments will not contain `descriptorSet` or
+`binding` entries. For example, an integer arg `f` to kernel `foo` might look like:
+
+  kernel,foo,arg,f,argOrdinal,1,offset,0,argKind,pod_pushconstant,argSize,4
 
 #### Sending in pointer-to-constant kernel arguments in uniform buffers
 
@@ -304,6 +385,8 @@ When the option is used:
   - The binding number for the struct containing the POD arguments is one more
     than the highest non-POD argument.
 
+By default this option is enabled. To disable this behavior, pass
+`-cluster-pod-kernel-args=0` to the compiler.
 
 #### Example descriptor set mapping
 
@@ -315,21 +398,21 @@ For example:
 In the default case, the bindings are:
 
 - `a` is mapped to a storage buffer with descriptor set 0, binding 0
-- `f` is mapped to a storage buffer with descriptor set 0, binding 1
-- `b` is mapped to a storage buffer with descriptor set 0, binding 2
-- `c` is mapped to a storage buffer with descriptor set 0, binding 3
-
-If `-cluster-pod-kernel-args` is used:
-
-- `a` is mapped to a storage buffer with descriptor set 0, binding 0
 - `b` is mapped to a storage buffer with descriptor set 0, binding 1
 - `f` and `c` are POD arguments, so they are mapped to the first and
   second members of a struct, and that struct is mapped to a storage
   buffer with descriptor set 0 and binding 2
 
+If `-cluster-pod-kernel-args=0` is used:
+
+- `a` is mapped to a storage buffer with descriptor set 0, binding 0
+- `f` is mapped to a storage buffer with descriptor set 0, binding 1
+- `b` is mapped to a storage buffer with descriptor set 0, binding 2
+- `c` is mapped to a storage buffer with descriptor set 0, binding 3
+
 That is, compiling as follows:
 
-    clspv foo.cl -cluster-pod-kernel-args -descriptormap=myclusteredmap
+    clspv foo.cl -descriptormap=myclusteredmap
 
 will produce the following in `myclusteredmap`:
 
@@ -346,7 +429,7 @@ use descriptor set 1.
 
 Compiling with the same sampler map from before:
 
-    clspv foo.cl -cluster-pod-kernel-args -descriptormap=myclusteredmap -samplermap=mysamplermap
+    clspv foo.cl -descriptormap=myclusteredmap -samplermap=mysamplermap
 
 produces the following descriptor map:
 
@@ -359,6 +442,18 @@ produces the following descriptor map:
 
 
 TODO(dneto): Give an example using images.
+
+#### Module-wide Specialization Constants
+
+The descriptor map includes entries for specialization constants that are used
+module-wide. The following specialization constants are currently generated:
+- `workgroup\_size\_x`: The x-dimension of workgroup size.
+- `workgroup\_size\_y`: The y-dimension of workgroup size.
+- `workgroup\_size\_z`: The z-dimension of workgroup size.
+- `work_dim`: The work dimensions.
+- `global\_offset\_x`: The x-dimension of global offset.
+- `global\_offset\_y`: The y-dimension of global offset.
+- `global\_offset\_z`: The z-dimension of global offset.
 
 #### Module scope constants
 
@@ -424,6 +519,41 @@ Take a closer look at the hexadecimal bytes in the example. They are:
 - `0000c03f`: the float value 1.5
 - `000000000000000000000000`: 12 zero bytes representing the zero-initialized third Foo value.
 
+#### Module Scope Push constants
+
+Some features, when enabled, require values to be passed by the application via
+push constants. For each value requested by clspv, an entry will be present in
+the descriptor map. The format is:
+
+- `pushconstant` to indicate the entry is a push constant
+- `name` to indicate the name of the requested push constant follows
+- the name of the push constant requested
+- `offset` to indicate the offset at which the push constant is expected follows
+- the offset within push constants at which the entry is expected
+- `size` to indicate that the total size follows
+- the total size of the push constant that will be used.
+
+Here is a list of the push constants currently supported:
+- `global_offset`: the 3D global offset used by `get_global_offset()` and in
+  global ID calculations. A vector of 3 32-bit integer values. Lower
+  dimensions come first in memory.
+- `enqueued_local_size`: the 3D local work size returned by
+  `get_enqueued_local_size()`. A vector of 3 32-bit integer values. Lower
+  dimensions come first in memory.
+- `global_size`: the 3D global size of the NDRange as returned by
+  `get_global_size()`. A vector of 3 32-bit integer values. Lower dimensions
+  come first in memory. Only required when non-uniform NDRanges are supported.
+- `num_workgroups`: the 3D number of work groups in the NDRange as returned by
+  `get_num_groups()`. A vector of 3 32-bit integer values. Lower dimensions come
+  first in memory. Only required when non-uniform NDRanges are supported.
+- `region_offset`: the sum of the global ID offset into the NDRange for this
+  uniform region and the global offset of the NDRange. A vector of 3 32-bit
+  integer values. Lower dimensions come first in memory. Only required when
+  non-uniform NDRanges are supported.
+- `region_group_offset`: the 3D group ID offset into the NDRange for this
+  region. A vector of 3 32-bit integer values. Lower dimensions come first in
+  memory. Only required when non-uniform NDRanges are supported.
+
 ### Attributes
 
 The following attributes are ignored in the OpenCL C source, and thus have
@@ -458,14 +588,16 @@ Otherwise, the Vulkan SPIR-V produced by the compiler will contain specializatio
 constants as follows:
 
 - The _x_ dimension of the work-group size is stored in a specialization
-  constant that is decorated with the `SpecId` of _0_, whose value defaults to
+  constant that is decorated with the `SpecId`, whose value defaults to
   _1_.
 - The _y_ dimension of the work-group size is stored in a specialization
-  constant that is decorated with the `SpecId` of _1_, whose value defaults to
+  constant that is decorated with the `SpecId`, whose value defaults to
   _1_.
 - The _z_ dimension of the work-group size is stored in a specialization
-  constant that is decorated with the `SpecId` of _2_, whose value defaults to
+  constant that is decorated with the `SpecId`, whose value defaults to
   _1_.
+
+The ids for the work-group size are recorded in the descriptor map.
 
 If a compilation unit contains multiple kernels, then either:
 - All kernels should have a `reqd_work_group_size` attribute, or
@@ -507,11 +639,13 @@ arithmetic.
 
 The OpenCL C work-item functions map to Vulkan SPIR-V as follows:
 
-- `get_work_dim()` will **always** return _3_.
+- `get_work_dim()` is mapped to the `work_dim` spec constant when `-work-dim`
+   is enabled (on by default), otherwise it always returns 3.
 - `get_global_size()` is implemented by multiplying the result from
   `get_local_size()` by the result from `get_num_groups()`.
 - `get_global_id()` is mapped to a SPIR-V variable decorated with
-  `GlobalInvocationId`.
+  `GlobalInvocationId`. The global offset is added to that variable when
+   `-global-offset` or `-global-offset-push-constant` is enabled.
 - `get_local_size()` is mapped to a SPIR-V variable decorated with
   `WorkgroupSize`.
 - `get_local_id()` is mapped to a SPIR-V variable decorated with
@@ -520,7 +654,11 @@ The OpenCL C work-item functions map to Vulkan SPIR-V as follows:
   `NumWorkgroups`.
 - `get_group_id()` is mapped to a SPIR-V variable decorated with
   `WorkgroupId`.
-- `get_global_offset()` will **always** return _0_.
+- `get_global_offset()` is mapped to the `global_offset` spec constant or push
+  constant when `-global-offset` or `-global-offset-push-constant` is enabled,
+  otherwise it always returns 0.  Spec constants are used unless
+  `-global-offset-push-constant` is specified or the language is set to OpenCL
+  C++ or OpenCL 2.0.
 
 ## OpenCL C Restrictions
 
@@ -554,8 +692,7 @@ The `double`, `double2`, `double3` and `double4` types **must not** be used.
 
 #### Images
 
-The `image2d_array_t`, `image1d_buffer_t`, and `image1d_array_t`
-types **must not** be used.
+The `image1d_buffer_t` type **must not** be used.
 
 #### Samplers
 

@@ -17,10 +17,13 @@
 namespace llvm {
 
 void initializeClspvPasses(PassRegistry &r) {
+  initializeAddFunctionAttributesPassPass(r);
+  initializeAutoPodArgsPassPass(r);
   initializeAllocateDescriptorsPassPass(r);
   initializeClusterModuleScopeConstantVarsPass(r);
   initializeClusterPodKernelArgumentsPassPass(r);
   initializeDirectResourceAccessPassPass(r);
+  initializeDeclarePushConstantsPassPass(r);
   initializeDefineOpenCLWorkItemBuiltinsPassPass(r);
   initializeFixupStructuredCFGPassPass(r);
   initializeFunctionInternalizerPassPass(r);
@@ -44,13 +47,15 @@ void initializeClspvPasses(PassRegistry &r) {
   initializeSplatArgPassPass(r);
   initializeSplatSelectConditionPassPass(r);
   initializeSpecializeImageTypesPassPass(r);
+  initializeStripFreezePassPass(r);
   initializeUBOTypeTransformPassPass(r);
   initializeUndoBoolPassPass(r);
   initializeUndoByvalPassPass(r);
   initializeUndoGetElementPtrConstantExprPassPass(r);
+  initializeUndoInstCombinePassPass(r);
   initializeUndoSRetPassPass(r);
   initializeUndoTranslateSamplerFoldPassPass(r);
-  initializeUndoTruncatedSwitchConditionPassPass(r);
+  initializeUndoTruncateToOddIntegerPassPass(r);
   initializeZeroInitializeAllocasPassPass(r);
 }
 

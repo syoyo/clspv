@@ -135,12 +135,12 @@ bool UBOTypeTransformPass::runOnModule(Module &M) {
     if (F.isDeclaration() || F.getCallingConv() != CallingConv::SPIR_KERNEL)
       continue;
 
+    auto pod_arg_impl = clspv::GetPodArgsImpl(F);
     for (auto &Arg : F.args()) {
       if ((clspv::Option::ConstantArgsInUniformBuffer() &&
-           clspv::GetArgKindForType(Arg.getType()) ==
-               clspv::ArgKind::BufferUBO) ||
+           clspv::GetArgKind(Arg) == clspv::ArgKind::BufferUBO) ||
           (!Arg.getType()->isPointerTy() &&
-           clspv::Option::PodArgsInUniformBuffer())) {
+           pod_arg_impl == clspv::PodArgImpl::kUBO)) {
         // Pre-populate the type mapping for types that must change. This
         // necessary to prevent caching what would appear to be a no-op too
         // early.
@@ -294,7 +294,7 @@ bool UBOTypeTransformPass::RemapTypes(Module &M) {
   SmallVector<Function *, 16> functions_to_modify;
   changed |= RemapFunctions(&functions_to_modify, M);
 
-  // GLobal variables with transformed types require rebuilding.
+  // Global variables with transformed types require rebuilding.
   SmallVector<GlobalVariable *, 16> variables_to_modify;
   changed |= RemapGlobalVariables(&variables_to_modify, M);
 
@@ -479,15 +479,27 @@ Constant *UBOTypeTransformPass::RebuildConstant(Constant *constant,
     return undef_constant;
   } else if (auto *agg_constant = dyn_cast<ConstantAggregate>(constant)) {
     auto *struct_ty = dyn_cast<StructType>(constant->getType());
-    auto *seq_ty = dyn_cast<SequentialType>(constant->getType());
+    auto *arr_ty = dyn_cast<ArrayType>(constant->getType());
+    auto *vec_ty = dyn_cast<VectorType>(constant->getType());
     // CompositeType doesn't implement getNumElements().
-    unsigned num_elements =
-        struct_ty ? struct_ty->getNumElements() : seq_ty->getNumElements();
-    auto *remapped_comp_ty = cast<CompositeType>(remapped_ty);
+    unsigned num_elements = 0;
+    if (struct_ty)
+      num_elements = struct_ty->getNumElements();
+    else if (arr_ty)
+      num_elements = arr_ty->getNumElements();
+    else if (vec_ty)
+      num_elements = vec_ty->getNumElements();
     SmallVector<Constant *, 8> rebuilt_constants;
     for (unsigned i = 0; i != num_elements; ++i) {
       Constant *element_constant = agg_constant->getAggregateElement(i);
-      Type *remapped_ele_ty = remapped_comp_ty->getTypeAtIndex(i);
+      Type *remapped_ele_ty = nullptr;
+      if (struct_ty) {
+        remapped_ele_ty = cast<StructType>(remapped_ty)->getTypeAtIndex(i);
+      } else if (arr_ty) {
+        remapped_ele_ty = remapped_ty->getArrayElementType();
+      } else if (vec_ty) {
+        remapped_ele_ty = cast<VectorType>(remapped_ty)->getElementType();
+      }
       if (remapped_ele_ty != element_constant->getType()) {
         rebuilt_constants.push_back(
             RebuildConstant(element_constant, remapped_ele_ty, M));

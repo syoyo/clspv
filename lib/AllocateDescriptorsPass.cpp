@@ -33,6 +33,7 @@
 #include "Constants.h"
 #include "DescriptorCounter.h"
 #include "Passes.h"
+#include "SpecConstant.h"
 
 using namespace llvm;
 
@@ -78,11 +79,11 @@ private:
   // 0.
   unsigned StartNewDescriptorSet(Module &M) {
     // Allocate the descriptor set we used.
-    unsigned result = descriptor_set_++;
     binding_ = 0;
     const auto set = clspv::TakeDescriptorIndex(&M);
-    assert(set == result);
-    return result;
+    assert(set == descriptor_set_);
+    descriptor_set_++;
+    return set;
   }
 
   // Returns true if |F| or call function |F| calls contains a global barrier.
@@ -418,7 +419,7 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
     int arg_index = 0;
     for (Argument &Arg : F.args()) {
       Type *argTy = Arg.getType();
-      const auto arg_kind = clspv::GetArgKindForType(argTy);
+      const auto arg_kind = clspv::GetArgKind(Arg);
 
       int separation_token = 0;
       switch (arg_kind) {
@@ -512,7 +513,10 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
       for (Argument &Arg : f_ptr->args()) {
         set_and_binding_list.emplace_back(kUnallocated, kUnallocated);
         if (discriminants_list[arg_index].index >= 0) {
-          set_and_binding_list.back().first = set;
+          if (clspv::GetArgKind(Arg) != clspv::ArgKind::PodPushConstant) {
+            // Don't assign a descriptor set to push constants.
+            set_and_binding_list.back().first = set;
+          }
           set_and_binding_list.back().second = binding++;
         }
         arg_index++;
@@ -535,17 +539,26 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
           // This argument will map to a resource.
           unsigned set = kUnallocated;
           unsigned binding = kUnallocated;
+          const bool is_push_constant_arg =
+              clspv::GetArgKind(*f_ptr->getArg(arg_index)) ==
+              clspv::ArgKind::PodPushConstant;
           if (always_single_kernel_descriptor ||
               functions_used_by_discriminant[info.index].size() ==
-                  kernels_with_bodies.size()) {
+                  kernels_with_bodies.size() ||
+              is_push_constant_arg) {
             // Reuse the descriptor because one of the following is true:
             // - This kernel argument discriminant is consistent across all
             //   kernels.
             // - Convention is to use a single descriptor for all kernels.
-            if (all_kernels_descriptor_set == kUnallocated) {
-              all_kernels_descriptor_set = clspv::TakeDescriptorIndex(&M);
+            //
+            // Push constants args always take this path because they share a
+            // dummy descriptor, kUnallocated, that is never codegen'd.
+            if (!is_push_constant_arg) {
+              if (all_kernels_descriptor_set == kUnallocated) {
+                all_kernels_descriptor_set = clspv::TakeDescriptorIndex(&M);
+              }
+              set = all_kernels_descriptor_set;
             }
-            set = all_kernels_descriptor_set;
             auto where = all_kernels_binding_for_arg_index.find(arg_index);
             if (where == all_kernels_binding_for_arg_index.end()) {
               binding = all_kernels_binding_for_arg_index.size();
@@ -626,7 +639,7 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
                  << " type " << *argTy << "\n";
         }
 
-        const auto arg_kind = clspv::GetArgKindForType(argTy);
+        const auto arg_kind = clspv::GetArgKind(Arg);
 
         Type *resource_type = nullptr;
         unsigned addr_space = kUnallocated;
@@ -701,7 +714,8 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
           break;
         }
         case clspv::ArgKind::Pod:
-        case clspv::ArgKind::PodUBO: {
+        case clspv::ArgKind::PodUBO:
+        case clspv::ArgKind::PodPushConstant: {
           // If original argument is:
           //   Elem %arg
           // Then make a StorageBuffer struct whose element is pod-type:
@@ -710,9 +724,12 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
           //
           // Use unnamed struct types so we generate less SPIR-V code.
           resource_type = StructType::get(argTy);
-          addr_space = clspv::Option::PodArgsInUniformBuffer()
-                           ? clspv::AddressSpace::Uniform
-                           : clspv::AddressSpace::Global;
+          if (arg_kind == clspv::ArgKind::PodUBO)
+            addr_space = clspv::AddressSpace::Uniform;
+          else if (arg_kind == clspv::ArgKind::PodPushConstant)
+            addr_space = clspv::AddressSpace::PushConstant;
+          else
+            addr_space = clspv::AddressSpace::Global;
           break;
         }
         case clspv::ArgKind::Sampler:
@@ -775,7 +792,8 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
           replacement = Builder.CreateGEP(call, {zero, zero, zero});
           break;
         case clspv::ArgKind::Pod:
-        case clspv::ArgKind::PodUBO: {
+        case clspv::ArgKind::PodUBO:
+        case clspv::ArgKind::PodPushConstant: {
           // Replace with a load of the start of the (virtual) variable.
           auto *gep = Builder.CreateGEP(call, {zero, zero});
           replacement = Builder.CreateLoad(gep);
@@ -822,35 +840,37 @@ bool AllocateDescriptorsPass::AllocateLocalKernelArgSpecIds(Module &M) {
     outs() << "Allocate local kernel arg spec ids\n";
   }
 
-  int next_id = clspv::FirstLocalSpecId();
   // Maps argument type to assigned SpecIds.
-  DenseMap<Type *, SmallVector<int, 4>> spec_id_types;
+  DenseMap<Type *, SmallVector<uint32_t, 4>> spec_id_types;
   // Tracks SpecIds assigned in the current function.
   DenseSet<int> function_spec_ids;
   // Tracks newly allocated spec ids.
-  std::vector<std::pair<Type *, int>> function_allocations;
+  std::vector<std::pair<Type *, uint32_t>> function_allocations;
 
   // Allocates a SpecId for |type|.
-  auto GetSpecId = [&next_id, &spec_id_types, &function_spec_ids,
+  auto GetSpecId = [&M, &spec_id_types, &function_spec_ids,
                     &function_allocations](Type *type) {
-    const bool always_distinct_sets =
-        clspv::Option::DistinctKernelDescriptorSets();
-
     // Attempt to reuse a SpecId. If the SpecId is associated with the same type
     // in another kernel and not yet assigned to this kernel it can be reused.
     auto where = spec_id_types.find(type);
     if (where != spec_id_types.end()) {
       for (auto id : where->second) {
         if (!function_spec_ids.count(id)) {
+          // Reuse |id| for |type| in this kernel. Record the use of |id| in
+          // this kernel.
+          function_allocations.emplace_back(type, id);
+          function_spec_ids.insert(id);
           return id;
         }
       }
     }
 
     // Need to allocate a new SpecId.
-    function_allocations.push_back(std::make_pair(type, next_id));
-    function_spec_ids.insert(next_id);
-    return next_id++;
+    uint32_t spec_id =
+        clspv::AllocateSpecConstant(&M, clspv::SpecConstant::kLocalMemorySize);
+    function_allocations.push_back(std::make_pair(type, spec_id));
+    function_spec_ids.insert(spec_id);
+    return spec_id;
   };
 
   IRBuilder<> Builder(M.getContext());
@@ -869,7 +889,7 @@ bool AllocateDescriptorsPass::AllocateLocalKernelArgSpecIds(Module &M) {
     int arg_index = 0;
     for (Argument &Arg : F.args()) {
       Type *argTy = Arg.getType();
-      const auto arg_kind = clspv::GetArgKindForType(argTy);
+      const auto arg_kind = clspv::GetArgKind(Arg);
       if (arg_kind == clspv::ArgKind::Local) {
         // Assign a SpecId to this argument.
         int spec_id = GetSpecId(Arg.getType());

@@ -15,7 +15,7 @@
 // passes on LLVM IR.  It only implements enough functionality to execute LLVM
 // scalar optimizations and the clspv transformations defined in clspv/Passes.h.
 
-#include "llvm/CodeGen/CommandFlags.inc"
+#include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -29,7 +29,11 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 
+// Necessary to initialize options and passes.
+#include "clspv/Option.h"
 #include "clspv/Passes.h"
+
+using namespace llvm;
 
 static llvm::cl::list<const PassInfo *, bool, PassNameParser>
     PassList(llvm::cl::desc("Transformations available:"));
@@ -64,7 +68,7 @@ int main(int argc, char **argv) {
   llvm::LLVMContext context;
   context.setDiscardValueNames(false);
   std::unique_ptr<llvm::Module> module =
-      llvm::parseIRFile(InputFile, err, context, true, "");
+      llvm::parseIRFile(InputFile, err, context);
 
   if (!module) {
     err.print(argv[0], errs());

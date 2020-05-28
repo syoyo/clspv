@@ -20,8 +20,9 @@
 from __future__ import print_function
 
 import argparse
+import errno
 import json
-import distutils.dir_util
+import os
 import os.path
 import subprocess
 import sys
@@ -42,6 +43,22 @@ DEPS_REMOTE = 'deps'
 SITE_TO_HOST = { 'github' : 'github.com' }
 
 VERBOSE = True
+
+
+def mkdir_p(directory):
+    """Make the directory, and all its ancestors, as required. Any of the directories
+    are allowed to already exist."""
+    if directory == "":
+        # We're being asked to make the current directory.
+        return
+
+    try:
+        os.makedirs(directory)
+    except OSError as e:
+        if e.errno == errno.EEXIST and os.path.isdir(directory):
+            pass
+        else:
+            raise
 
 
 def command_output(cmd, directory, fail_ok=False):
@@ -91,30 +108,34 @@ class GoodCommit(object):
                     sep=sep,
                     subrepo=self.subrepo)
 
-    def AddRemote(self):
-        """Add the DEPS_REMOTE remote if it does not exist."""
-        if len(command_output(['git', 'remote', 'get-url', DEPS_REMOTE], self.subdir, fail_ok=True)) == 0:
-            command_output(['git', 'remote', 'add', DEPS_REMOTE, self.GetUrl()], self.subdir)
-
     def HasCommit(self):
         """Check if the repository contains the known-good commit."""
         return 0 == subprocess.call(['git', 'rev-parse', '--verify', '--quiet',
                                      self.commit + '^{commit}'],
                                     cwd=self.subdir)
 
-    def Clone(self):
-        distutils.dir_util.mkpath(self.subdir)
-        command_output(['git', 'clone', self.GetUrl(), '.'], self.subdir)
+    def InitRepo(self, shallow):
+        """Initialise the local repo."""
+        mkdir_p(self.subdir)
+        if shallow:
+            command_output(['git', 'init'], self.subdir)
+        else:
+            command_output(['git', 'clone', self.GetUrl(), '.'], self.subdir)
+        command_output(['git', 'remote', 'add', DEPS_REMOTE, self.GetUrl()], self.subdir)
 
-    def Fetch(self):
-        command_output(['git', 'fetch', DEPS_REMOTE, self.branch], self.subdir)
+    def Fetch(self, shallow):
+        cmd = ['git', 'fetch']
+        if shallow:
+            cmd += ['--depth', '1']
+        cmd.append(DEPS_REMOTE)
+        cmd.append(self.commit if shallow else self.branch)
+        command_output(cmd, self.subdir)
 
-    def Checkout(self):
+    def Checkout(self, shallow):
         if not os.path.exists(os.path.join(self.subdir,'.git')):
-            self.Clone()
-        self.AddRemote()
+            self.InitRepo(shallow)
         if not self.HasCommit():
-            self.Fetch()
+            self.Fetch(shallow)
         command_output(['git', 'checkout', self.commit], self.subdir)
 
 
@@ -132,6 +153,8 @@ def main():
 
     parser = argparse.ArgumentParser(description='Get sources for '
                                      ' dependencies at a specified commit')
+    parser.add_argument('--shallow', action='store_true',
+                        help='Only fetch the required commits')
     parser.add_argument('--dir', dest='dir', default='.',
                         help='Set target directory for dependencies source '
                         'root. Default is the current directory.')
@@ -142,7 +165,7 @@ def main():
 
     args = parser.parse_args()
 
-    distutils.dir_util.mkpath(args.dir)
+    mkdir_p(args.dir)
     print('Change directory to {d}'.format(d=args.dir))
     os.chdir(args.dir)
 
@@ -152,7 +175,7 @@ def main():
         if c.name not in args.deps:
             continue
         print('Get {n}\n'.format(n=c.name))
-        c.Checkout()
+        c.Checkout(args.shallow)
     sys.exit(0)
 
 

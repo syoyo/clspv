@@ -350,10 +350,10 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
     Value *Src = Inst->getOperand(0);
     Type *SrcTy = Src->getType()->getPointerElementType();
     Type *DstTy = Inst->getType()->getPointerElementType();
-    Type *SrcEleTy =
-        SrcTy->isVectorTy() ? SrcTy->getSequentialElementType() : SrcTy;
-    Type *DstEleTy =
-        DstTy->isVectorTy() ? DstTy->getSequentialElementType() : DstTy;
+    VectorType *SrcVecTy = dyn_cast<VectorType>(SrcTy);
+    VectorType *DstVecTy = dyn_cast<VectorType>(DstTy);
+    Type *SrcEleTy = SrcTy->isVectorTy() ? SrcVecTy->getElementType() : SrcTy;
+    Type *DstEleTy = DstTy->isVectorTy() ? DstVecTy->getElementType() : DstTy;
     // These are bit widths of the source and destination types, even
     // if they are vector types.  E.g. bit width of float4 is 64.
     unsigned SrcTyBitWidth = DL.getTypeStoreSizeInBits(SrcTy);
@@ -432,7 +432,7 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
             if (DstTy->isVectorTy()) {
               if (SrcEleTyBitWidth == DstEleTyBitWidth) {
                 TmpValTy =
-                    VectorType::get(SrcEleTy, DstTy->getVectorNumElements());
+                    VectorType::get(SrcEleTy, DstVecTy->getNumElements());
               } else {
                 TmpValTy = VectorType::get(SrcEleTy, NumElement);
               }
@@ -445,9 +445,9 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
                 TmpSTVal = Builder.CreateBitCast(STVal, TmpValTy);
               } else {
                 unsigned DstVecTyNumElement =
-                    DstTy->getVectorNumElements() / NumVector;
-                SmallVector<uint32_t, 4> Idxs;
-                for (unsigned i = 0; i < DstVecTyNumElement; i++) {
+                    DstVecTy->getNumElements() / NumVector;
+                SmallVector<int32_t, 4> Idxs;
+                for (int i = 0; i < DstVecTyNumElement; i++) {
                   Idxs.push_back(i + (DstVecTyNumElement * VIdx));
                 }
                 Value *UndefVal = UndefValue::get(DstTy);
@@ -465,11 +465,11 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
                 }
               } else {
                 // Handle vector type.
-                unsigned SrcNumElement = SrcTy->getVectorNumElements();
-                unsigned DstNumElement = DstTy->getVectorNumElements();
+                unsigned SrcNumElement = SrcVecTy->getNumElements();
+                unsigned DstNumElement = DstVecTy->getNumElements();
                 for (unsigned i = 0; i < NumElement; i++) {
-                  SmallVector<uint32_t, 4> Idxs;
-                  for (unsigned j = 0; j < SrcNumElement; j++) {
+                  SmallVector<int32_t, 4> Idxs;
+                  for (int j = 0; j < SrcNumElement; j++) {
                     Idxs.push_back(i * SrcNumElement + j);
                   }
 
@@ -545,7 +545,7 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
               STValues.push_back(STVal);
             } else {
               // Handle vector type.
-              DstNumElement = DstTy->getVectorNumElements();
+              DstNumElement = DstVecTy->getNumElements();
               for (unsigned i = 0; i < DstNumElement; i++) {
                 Value *Idx = Builder.getInt32(i);
                 Value *TmpVal = Builder.CreateExtractElement(STVal, Idx);
@@ -558,11 +558,11 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
             Value *SubEleIdx = Builder.getInt32(0);
             if (IsGEPUser) {
               // Compute SubNumElement = idxscale
-              unsigned SubNumElement = SrcTy->getVectorNumElements();
+              unsigned SubNumElement = SrcVecTy->getNumElements();
               if (DstTy->isVectorTy() && (SrcEleTyBitWidth != DstTyBitWidth)) {
                 // Same condition under which DstNumElements > 1
-                SubNumElement = SrcTy->getVectorNumElements() /
-                                DstTy->getVectorNumElements();
+                SubNumElement =
+                    SrcVecTy->getNumElements() / DstVecTy->getNumElements();
               }
 
               // Compute SubEleIdx = idxbase * idxscale
@@ -583,8 +583,8 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
               Value *Idxs[] = {NewAddrIdx, SubEleIdx};
               Value *DstAddr = Builder.CreateGEP(BaseAddr, Idxs);
               Type *TmpSrcTy = SrcEleTy;
-              if (TmpSrcTy->isVectorTy()) {
-                TmpSrcTy = TmpSrcTy->getVectorElementType();
+              if (auto TmpSrcVecTy = dyn_cast<VectorType>(TmpSrcTy)) {
+                TmpSrcTy = TmpSrcVecTy->getElementType();
               }
               Value *TmpVal = Builder.CreateBitCast(STValues[i], TmpSrcTy);
 
@@ -717,8 +717,8 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
                 unsigned NumElement = DstTyBitWidth / SrcEleTyBitWidth;
                 Value *Undef = UndefValue::get(SrcTy);
 
-                SmallVector<uint32_t, 4> Idxs;
-                for (unsigned i = 0; i < NumElement; i++) {
+                SmallVector<int32_t, 4> Idxs;
+                for (int i = 0; i < NumElement; i++) {
                   Idxs.push_back(i);
                 }
                 DstVal = Builder.CreateShuffleVector(LDValues[0], Undef, Idxs);
@@ -747,7 +747,6 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
                 // ==> if types are same between src and dst, it will be
                 // igonored
                 //
-                unsigned NumElement = SrcTyBitWidth / DstTyBitWidth;
                 unsigned SubNumElement = SrcEleTyBitWidth / DstTyBitWidth;
                 if (SubNumElement != 2 && SubNumElement != 4) {
                   llvm_unreachable("Unsupported SubNumElement");
@@ -792,7 +791,7 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
             //
             unsigned NumElement = 1;
             if (SrcTy->isVectorTy()) {
-              NumElement = SrcTy->getVectorNumElements() * 2;
+              NumElement = SrcVecTy->getNumElements() * 2;
             }
 
             // Handle scalar type.
@@ -830,8 +829,8 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
                   for (unsigned i = 0; i < Values.size(); i++) {
                     Values[i] = Builder.CreateBitCast(Values[i], TmpVecTy);
                   }
-                  SmallVector<uint32_t, 4> Idxs;
-                  for (unsigned i = 0; i < (NumVector * 2); i++) {
+                  SmallVector<int32_t, 4> Idxs;
+                  for (int i = 0; i < (NumVector * 2); i++) {
                     Idxs.push_back(i);
                   }
                   for (unsigned i = 0; i < Values.size(); i = i + 2) {
@@ -863,8 +862,8 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
             while (LDValues.size() != 1) {
               SmallVector<Value *, 4> TmpLDValues;
               for (unsigned i = 0; i < LDValues.size(); i = i + 2) {
-                SmallVector<uint32_t, 4> Idxs;
-                for (unsigned j = 0; j < NumElement; j++) {
+                SmallVector<int32_t, 4> Idxs;
+                for (int j = 0; j < NumElement; j++) {
                   Idxs.push_back(j);
                 }
                 Value *TmpVal = Builder.CreateShuffleVector(
@@ -1057,27 +1056,14 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
           } else if (SrcTyBitWidth < DstTyBitWidth) {
             unsigned NumElement = DstTyBitWidth / SrcTyBitWidth;
 
-            // Create Mask.
-            Constant *Mask = nullptr;
-            if (NumElement == 1) {
-              Mask = Builder.getInt32(0xFF);
-            } else if (NumElement == 2) {
-              Mask = Builder.getInt32(0xFFFF);
-            } else if (NumElement == 4) {
-              Mask = Builder.getInt32(0xFFFFFFFF);
-            } else {
-              llvm_unreachable("strange type on bitcast");
-            }
-
             // Create store values.
             Value *STVal = ST->getValueOperand();
             SmallVector<Value *, 8> STValues;
             for (unsigned i = 0; i < NumElement; i++) {
               Type *TmpTy = Type::getIntNTy(M.getContext(), DstTyBitWidth);
               Value *TmpVal = Builder.CreateBitCast(STVal, TmpTy);
-              TmpVal = Builder.CreateLShr(TmpVal,
-                                          Builder.getInt32(i * SrcTyBitWidth));
-              TmpVal = Builder.CreateAnd(TmpVal, Mask);
+              TmpVal = Builder.CreateLShr(
+                  TmpVal, Builder.getIntN(DstTyBitWidth, i * SrcTyBitWidth));
               TmpVal = Builder.CreateTrunc(TmpVal, SrcTy);
               STValues.push_back(TmpVal);
             }
@@ -1131,8 +1117,8 @@ bool ReplacePointerBitcastPass::runOnModule(Module &M) {
             for (unsigned i = 1; i < LDValues.size(); i++) {
               Value *TmpVal = Builder.CreateBitCast(LDValues[i], TmpSrcTy);
               TmpVal = Builder.CreateZExt(TmpVal, TmpDstTy);
-              TmpVal = Builder.CreateShl(TmpVal,
-                                         Builder.getInt32(i * SrcTyBitWidth));
+              TmpVal = Builder.CreateShl(
+                  TmpVal, Builder.getIntN(DstTyBitWidth, i * SrcTyBitWidth));
               DstVal = Builder.CreateOr(DstVal, TmpVal);
             }
 

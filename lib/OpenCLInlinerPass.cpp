@@ -19,9 +19,11 @@
 #include "llvm/Pass.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
+#include "Builtins.h"
 #include "Passes.h"
 
 using namespace llvm;
+using namespace clspv;
 
 #define DEBUG_TYPE "openclinliner"
 
@@ -43,23 +45,22 @@ ModulePass *createOpenCLInlinerPass() { return new OpenCLInlinerPass(); }
 } // namespace clspv
 
 bool OpenCLInlinerPass::runOnModule(Module &M) {
-  StringRef FuncNames[] = {"_Z13get_global_idj",     "_Z14get_local_sizej",
-                           "_Z12get_local_idj",      "_Z14get_num_groupsj",
-                           "_Z12get_group_idj",      "_Z15get_global_sizej",
-                           "_Z17get_global_offsetj", "_Z12get_work_dimj"};
   bool changed = false;
-
-  for (StringRef FuncName : FuncNames) {
-    if (Function *F = M.getFunction(FuncName)) {
+  std::list<Function *> func_list;
+  for (auto &F : M.getFunctionList()) {
+    // process only WorkItem functions
+    auto &func_info = Builtins::Lookup(&F);
+    if (func_info.getType() > Builtins::kType_WorkItem_Start &&
+        func_info.getType() < Builtins::kType_WorkItem_End) {
       SmallVector<CallInst *, 4> Calls;
 
       // Walk the users of the function.
-      for (User *U : F->users()) {
+      for (User *U : F.users()) {
         // Find only the calls to the function.
         if (CallInst *CI = dyn_cast<CallInst>(U)) {
-          // Check if the call instruction is using a constant argument.
-          if (isa<Constant>(CI->getArgOperand(0))) {
-            // We found a function we want to inline!
+          // If the called function doesn't take an argument or is using a
+          // constant argument, add the call to the list of to-be-inlined calls.
+          if (F.arg_empty() || isa<Constant>(CI->getArgOperand(0))) {
             Calls.push_back(CI);
           }
         }
@@ -67,15 +68,18 @@ bool OpenCLInlinerPass::runOnModule(Module &M) {
 
       for (CallInst *CI : Calls) {
         InlineFunctionInfo info;
-        changed |= InlineFunction(CI, info).isSuccess();
+        changed |= InlineFunction(*CI, info).isSuccess();
       }
-
-      // If we inlined all the calls to the function, remove it.
-      if (0 == F->getNumUses()) {
+      func_list.push_front(&F);
+    }
+  }
+  if (func_list.size() != 0) {
+    // remove dead
+    for (auto *F : func_list) {
+      if (F->use_empty()) {
         F->eraseFromParent();
       }
     }
   }
-
   return changed;
 }
